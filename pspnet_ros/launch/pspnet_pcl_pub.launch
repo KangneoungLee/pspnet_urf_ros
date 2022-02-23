@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<launch>
+     
+
+
+     <arg name="dbg_args"   default="gdb -ex run --args"/>
+     <arg name="debug_args"   default=""/>
+
+<node pkg="pspnet_ros" type="pclpub_node" name="pclpub_node" output="screen">
+
+	  
+         
+          <param name="cost_image_topic"        value="pspnet_output/cost_image"/> 
+          <param name="sync_depth_image_topic"        value="pspnet_output/sync_depth_raw"/> 
+          <param name="depth_cam_info_topic"        value="camera/depth/camera_info"/> 
+        
+     </node>
+
+</launch>

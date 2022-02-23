@@ -1,0 +1,40 @@
+<?xml version="1.0"?>
+<launch>
+     
+
+
+     <arg name="dbg_args"   default="gdb -ex run --args"/>
+     <arg name="debug_args"   default=""/>
+
+<node pkg="pspnet_ros" type="pspnet_ros.py" name="pspnet_ros" output="screen">
+
+	  
+          <param name="number_of_class"      value="9"/>  <!-- 25 -->
+          <param name="model_path"        value="/home/nvidia/pspnet_ros/src/pspnet_ros/script/weight/rugd/train_epoch_100_reduced.pth"/> <!-- train_epoch_100.pth-->
+          <param name="color_list_path"        value="/home/nvidia/pspnet_ros/src/pspnet_ros/script/list/rugd/rugd_colors_reduced.txt"/> <!-- rugd_colors.txt -->
+          <param name="class_name_list_path"        value="/home/nvidia/pspnet_ros/src/pspnet_ros/script/list/rugd/rugd_names_reduced.txt"/> <!-- rugd_names.txt -->
+
+          <param name="base_size"      value="256"/> <!-- 424-->
+          <param name="image_height_net_input"      value="257"/> <!-- 241 -->
+          <param name="image_width_net_input"      value="257"/> <!-- 425 -->
+          <param name="scale"      value="1"/>
+          <param name="zoom_factor"      value="1"/>
+          <param name="number_of_gpu"      value="2"/>
+          <param name="number_of_pspnet_layers"      value="50"/>
+
+          <param name="color_image_topic_name"        value="front_cam/camera/color/image_raw"/>
+	  <param name="depth_image_topic_name"        value="front_cam/camera/depth/image_rect_raw"/>
+          <param name="depth_camera_info_topic_name"        value="front_cam/camera/depth/camera_info"/>
+          <param name="publish_image_for_costmap"      value="True"/>
+          <param name="publish_image_for_leginhibit"      value="True"/>
+          <param name="publish_semantic_segmentation_image"      value="True"/>
+          <param name="publish_sync_depth_topic_name"      value="pspnet_output/sync_depth_raw"/>
+	  <param name="image_for_costmap_topic_name"        value="pspnet_output/cost_image"/>
+          <param name="image_for_leginhibit_topic_name"        value="pspnet_output/leg_inhibit_image"/>
+          <param name="semantic_segmentation_image_topic_name"        value="pspnet_output/image_raw"/>
+          <param name="cost_low"        value="5"/>  <!-- 5 -->
+          <param name="cost_med"        value="20"/>  <!-- 20 -->
+          <param name="cost_high"        value="254"/>
+     </node>
+
+</launch>
