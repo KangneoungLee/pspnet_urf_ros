@@ -31,7 +31,7 @@ from sensor_msgs.msg import CameraInfo, Image, CompressedImage
 #cost_low_list =[1,3,5,6]
 #cost_med_list = [2,7]
 #cost_high_list = [4,8]
-cost_low_list =[3,6]
+cost_low_list =[3,6]  #[3,6]
 cost_med_list = [2,7]
 cost_high_list = [4,8]
 
