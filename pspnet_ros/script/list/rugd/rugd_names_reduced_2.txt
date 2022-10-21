@@ -1,0 +1,10 @@
+void
+dirt
+sand
+grass
+water
+asphalt
+gravel
+mulch
+bush
+background

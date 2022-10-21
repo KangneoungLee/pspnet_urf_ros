@@ -12,12 +12,12 @@
          
           <param name="cost_image_topic"        value="pspnet_output/cost_image"/> 
           <param name="sync_depth_image_topic"        value="pspnet_output/sync_depth_raw"/> 
-          <param name="depth_cam_info_topic"        value="front_cam/camera/depth/camera_info"/>
-          <param name="point_cloud_frame"        value="camera_aligned_depth_to_color_frame"/>  
+          <param name="depth_cam_info_topic"        value="camera/depth/camera_info"/>
+          <param name="point_cloud_frame"        value="depth_camera_optical_frame"/>  
           <param name="tf_prefix"        value=""/>
         
 </node>
-
-<!-- <node pkg="tf" type="static_transform_publisher" name="link1_broadcaster" args="0 0 0 -1.57 0 -1.57  map camera_optical_frame  10" /> -->
+<!--
+<node pkg="tf" type="static_transform_publisher" name="link1_broadcaster" args="0 0 0 -1.57 0 -1.57  map camera_optical_frame  10" /> -->
 
 </launch>

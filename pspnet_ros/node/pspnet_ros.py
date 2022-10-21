@@ -31,9 +31,18 @@ from sensor_msgs.msg import CameraInfo, Image, CompressedImage
 #cost_low_list =[1,3,5,6]
 #cost_med_list = [2,7]
 #cost_high_list = [4,8]
-cost_low_list =[3,6]  #[3,6]
-cost_med_list = [2,7]
-cost_high_list = [4,8]
+
+#cost_low_list =[3,5,6]  #[3,6]
+#cost_med_list = [2,7]
+#cost_high_list = [4,8]
+
+#reduced 2 list
+
+cost_low_list =[5]  #asphalt
+cost_med_list = [1,2,3,6,7] #dirt sand grass gravel mulch
+cost_high_list = [4,8,9] # water bush background
+
+
 
 def myhook():
   print("shutdown time!")
@@ -63,14 +72,19 @@ class pspnet_node:
         self.model_path = rospy.get_param('~model_path','exp/rugd/pspnet50/model/train_epoch_100.pth')
         self.colors_path = rospy.get_param('~color_list_path','data/rugd/rugd_colors.txt')
         self.names_path = rospy.get_param('~class_name_list_path','data/rugd/rugd_names.txt')
+        self.noised_pspnet_use = rospy.get_param('~noised_pspnet_use',False)
 
         self.is_imgcostmap_pub = rospy.get_param('~publish_image_for_costmap',True)
         self.is_imgleginhibit_pub = rospy.get_param('~publish_image_for_leginhibit',True)
         self.is_semantic_img_pub = rospy.get_param('~publish_semantic_segmentation_image',False)
 
-        self.cost_low = rospy.get_param('~cost_low',2)
-        self.cost_med = rospy.get_param('~cost_med',20)
-        self.cost_high = rospy.get_param('~cost_high',200)
+        self.in_time = rospy.Time() #create time instance since the pspnet takes lots of time to process the image. need to store the input time
+
+        self.cost_low = rospy.get_param('~cost_low',0)
+        self.cost_med = rospy.get_param('~cost_med',128)
+        self.cost_high = rospy.get_param('~cost_high',255)
+
+        self.invalid_cost =  rospy.get_param('~cost_ur',32)
 
         self.colors = np.loadtxt(self.colors_path).astype('uint8')
 
@@ -88,6 +102,9 @@ class pspnet_node:
         self.mean = [item * value_scale for item in self.mean]
         self.std = [0.229, 0.224, 0.225]
         self.std = [item * value_scale for item in self.std]
+
+        self.prediction_org = np.zeros((1,1,self.class_num),dtype=float)
+        self.prediction_w_noise = np.zeros((1,1,self.class_num),dtype=float)
         
         self.model = PSPNet(layers=self.layer_num, classes=self.class_num, zoom_factor=self.zoom_factor, pretrained=False)
         print(self.model)
@@ -125,15 +142,28 @@ class pspnet_node:
 
         if(self.is_semantic_img_pub == True):
            self.image_pub = rospy.Publisher(self.semantic_segmentation_image_topic_name,Image,queue_size = 1)
+           if self.noised_pspnet_use == True:
+              self.image_pub_noised = rospy.Publisher(self.semantic_segmentation_image_topic_name+"noised",Image,queue_size = 1)
 
         if(self.is_imgcostmap_pub == True):
            self.image_costmap_pub = rospy.Publisher(self.image_for_costmap_topic_name,Image,queue_size = 1)
-
+           if self.noised_pspnet_use == True:
+              self.invalid_region_image_costmap_pub = rospy.Publisher(self.image_for_costmap_topic_name+"invalid_region",Image,queue_size = 1)
 
         self.sync_depth_image_pub = rospy.Publisher(self.publish_sync_depth_topic_name,Image,queue_size = 1)
 
 
         rospy.loginfo("Initialization completed")
+
+    def gaussian_noise(self,image_in, mean=0, var=0.01):
+        image = np.array(image_in / 255, dtype=float)
+        noise = np.random.normal(mean, var ** 0.5, image.shape)
+        out = image + noise
+        low_clip = 0.
+        out = np.clip(out, low_clip, 1.0)
+        out = np.uint8(out * 255)
+    # cv.imshow("gasuss", out)
+        return out
 
     def checkparam(self):
         
@@ -168,6 +198,8 @@ class pspnet_node:
 
            self.img_receive_flag = True
 
+           self.in_time = color_img_msg.header.stamp
+
            self.color_img = self.bridge.imgmsg_to_cv2(color_img_msg, "bgr8") # if the cv_bridge encoding is "bgr8" then the stored image is "bgr"
            img_for_imshow = self.color_img.copy() # cv2.imshow use the bgr order
            self.depth_img = self.bridge.imgmsg_to_cv2(depth_img_msg)#self.depth_img = self.bridge.imgmsg_to_cv2(depth_img_msg, "mono16")
@@ -201,79 +233,126 @@ class pspnet_node:
     
     def pspnetloop(self):
         if self.img_receive_flag == True:
+           self.model.eval()
            rospy.loginfo('>>>>>>>>>>>>>>>> Start Evaluation >>>>>>>>>>>>>>>>')
            batch_time = AverageMeter()
         
-           self.model.eval()
-        
-           end = time.time()
-        
-           #input = np.squeeze(self.color_img.numpy(), axis=0)
-           #image = np.transpose(input, (1, 2, 0))
-           image = self.color_img.copy()
-           h, w, _ = image.shape
-           prediction = np.zeros((h, w, self.class_num), dtype=float)
-           long_size = round(self.scale * self.base_size)
-           new_h = long_size
-           new_w = long_size
-           if h > w:
-              new_w = round(long_size/float(h)*w)
+           if self.noised_pspnet_use == True:
+              no_loop_noise = 2
            else:
-              new_h = round(long_size/float(w)*h)
-            
-           image_scale = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+              no_loop_noise = 1
+
+           gaussian_noise_m = 0
+           gaussian_noise_var = 0.0004  #default : 0.0009
+
+           for loop in range(0,no_loop_noise):
         
-           prediction = self.scale_process(image_scale, h, w)
+              end = time.time()
+        
+              #input = np.squeeze(self.color_img.numpy(), axis=0)
+              #image = np.transpose(input, (1, 2, 0))
+              image = self.color_img.copy()
 
-           self.cost_image_gen(prediction)
+              # add gaussian noise  initial frame does not include gaussian noise
+              if loop > 0:
+                 image = self.gaussian_noise(image, gaussian_noise_m ,gaussian_noise_var)
+              
+              #cv2.imshow("noised image", image)
+              #cv2.waitKey() 
+              h, w, _ = image.shape
+              prediction = np.zeros((h, w, self.class_num), dtype=float)
+              if(loop == 0):
+                 self.prediction_org = np.zeros((h, w, self.class_num), dtype=float)
+              else: #loop == 1
+                 self.prediction_w_noise = np.zeros((h, w, self.class_num), dtype=float)
 
-           #print("prediction check :")
-           #print("class 0 :",prediction[10,10,0],"class 1 :",prediction[10,10,1],"class 2 :",prediction[10,10,2],"class 3 :",prediction[10,10,3],"class 4 :",prediction[10,10,4],"class 5 :",prediction[10,10,5],"class 6 :",prediction[10,10,6],"class 7 :",prediction[10,10,7],"class 8 :",prediction[10,10,8])
-           prediction_max = np.argmax(prediction, axis=2)
+              long_size = round(self.scale * self.base_size)
+              new_h = long_size
+              new_w = long_size
+              if h > w:
+                 new_w = round(long_size/float(h)*w)
+              else:
+                 new_h = round(long_size/float(w)*h)
+            
+              image_scale = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+        
+              prediction = self.scale_process(image_scale, h, w)
+              if(loop == 0):
+                 self.prediction_org = np.copy(prediction)
+              else: #loop == 1
+                 self.prediction_w_noise = np.copy(prediction)
 
-           #print("prediction argmax check :",prediction_max[10,10])
+              #self.CostImgSinglePred(prediction)
+              
+
+              #print("prediction check :")
+              #print("class 0 :",prediction[10,10,0],"class 1 :",prediction[10,10,1],"class 2 :",prediction[10,10,2],"class 3 :",prediction[10,10,3],"class 4 :",prediction[10,10,4],"class 5 :",prediction[10,10,5],"class 6 :",prediction[10,10,6],"class 7 :",prediction[10,10,7],"class 8 :",prediction[10,10,8])
+
+              batch_time.update(time.time() - end)
+              end = time.time()
+           
+              rospy.loginfo('>>>>> PSPNET processing time : %.3f sec, loop number: %d',batch_time.val, loop)
+           
 
 
-           #------------ code for checking the data ---------------------
+           if self.noised_pspnet_use == True:
+              self.CostImgNoisedPred(self.prediction_org, self.prediction_w_noise)
+              prediction_max = np.argmax(self.prediction_org, axis=2)
+              prediction_noised_max = np.argmax(self.prediction_w_noise, axis=2)
 
-           #file_prediction = open("semgmented_prediction_image.txt","w")
+              gray = np.uint8(prediction_max)
+              gray_noised = np.uint8(prediction_noised_max)
+              color = colorize(gray, self.colors)
+              color_noised = colorize(gray_noised, self.colors)
+
+              result_image = np.array(color)
+              result_image = cv2.cvtColor(result_image, cv2.COLOR_RGB2BGR)
+              result_image_noised = np.array(color_noised)
+              result_image_noised = cv2.cvtColor(result_image_noised, cv2.COLOR_RGB2BGR)
+
+              msg = self.bridge.cv2_to_imgmsg(result_image, "bgr8")
+              msg_noised = self.bridge.cv2_to_imgmsg(result_image_noised, "bgr8")
+
+              if(self.is_semantic_img_pub == True):
+                 self.image_pub.publish(msg)
+                 self.image_pub_noised.publish(msg_noised)
+           else:
+              self.CostImgSinglePred(self.prediction_org)
+              prediction_max = np.argmax(self.prediction_org, axis=2)
+
+              #print("prediction argmax check :",prediction_max[10,10])
+
+
+              #------------ code for checking the data ---------------------
+
+              #file_prediction = open("semgmented_prediction_image.txt","w")
  
-           #for i in range(0,h): 
-           #   file_prediction.write("\n") 
+              #for i in range(0,h): 
+              #   file_prediction.write("\n") 
 
-           #   for j in range(0,w):  
-           #      element = round_to_2(prediction_max[i,j])  
-           #      element_str = str(element) 
-           #      L1 = [element_str, " "] 
-           #      file_prediction.writelines(L1) 
+              #   for j in range(0,w):  
+              #      element = round_to_2(prediction_max[i,j])  
+              #      element_str = str(element) 
+              #      L1 = [element_str, " "] 
+              #      file_prediction.writelines(L1) 
 
-           #file_prediction.close() 
+              #file_prediction.close() 
 
-           #----------- code for checking the data end -------------------
-
-
-
-           batch_time.update(time.time() - end)
-           end = time.time()
+              #----------- code for checking the data end -------------------
+              gray = np.uint8(prediction_max)
+              color = colorize(gray, self.colors)
            
-           rospy.loginfo('>>>>> PSPNET processing time : %.3f sec',batch_time.val)
-           
+              #Convert PIL image file to numpy array
+              result_image = np.array(color)
+              result_image = cv2.cvtColor(result_image, cv2.COLOR_RGB2BGR)
 
-           gray = np.uint8(prediction_max)
-           color = colorize(gray, self.colors)
-           
-           #Convert PIL image file to numpy array
-           result_image = np.array(color)
-           result_image = cv2.cvtColor(result_image, cv2.COLOR_RGB2BGR)
+              #cv2.imshow("result image", result_image)
+              #cv2.waitKey()
 
-           #cv2.imshow("result image", result_image)
-           #cv2.waitKey(1)
+              msg = self.bridge.cv2_to_imgmsg(result_image, "bgr8")
+              if(self.is_semantic_img_pub == True):
+                 self.image_pub.publish(msg)
 
-           msg = self.bridge.cv2_to_imgmsg(result_image, "bgr8")
-
-
-           if(self.is_semantic_img_pub == True):
-              self.image_pub.publish(msg)
 
            self.img_receive_flag = False
            
@@ -295,7 +374,7 @@ class pspnet_node:
         grid_w = int(np.ceil(float(new_w-self.test_w)/stride_w) + 1)
         prediction_crop = np.zeros((new_h, new_w, self.class_num), dtype=float)
         count_crop = np.zeros((new_h, new_w), dtype=float)
-        rospy.loginfo('>>>>>>>>>>>>>>>> new height : %d, new width : %d, Number of loop : %d>>>>>>>>>>>>>>>>',new_h,new_w,grid_h*grid_w)
+        rospy.loginfo('>>>>>>>>>>>>>>>> new height : %d, new width : %d, Number of netprocess : %d>>>>>>>>>>>>>>>>',new_h,new_w,grid_h*grid_w)
         
         for index_h in range(0, grid_h):
             for index_w in range(0, grid_w):
@@ -307,7 +386,7 @@ class pspnet_node:
                 s_w = e_w - self.test_w
                 image_crop = image[s_h:e_h, s_w:e_w].copy()
                 count_crop[s_h:e_h, s_w:e_w] += 1
-                prediction_crop[s_h:e_h, s_w:e_w, :] += self.net_process(image_crop)
+                prediction_crop[s_h:e_h, s_w:e_w, :] += self.net_process(image_crop, use_std = True)
         prediction_crop /= np.expand_dims(count_crop, 2)
         prediction_crop = prediction_crop[pad_h_half:pad_h_half+ori_h, pad_w_half:pad_w_half+ori_w]
         prediction = cv2.resize(prediction_crop, (img_w, img_h), interpolation=cv2.INTER_LINEAR)
@@ -360,9 +439,135 @@ class pspnet_node:
         output = output.transpose(1, 2, 0)
         return output
 
-    def cost_image_gen(self, prediction):
-        
+    def CostImgNoisedPred(self, prediction, prediction_noised):
 
+        h, w, _ = prediction.shape
+        cost_image = np.zeros((h,w), dtype="uint8")
+        cost_low_image = np.zeros((h,w), dtype="uint16")
+        cost_med_image = np.zeros((h,w), dtype="uint16")
+        cost_high_image = np.zeros((h,w), dtype="uint16")
+        invalid_region_image = np.zeros((h,w), dtype="uint16")
+
+        for layer_num in cost_low_list:
+           single_predict = prediction[:,:,layer_num]
+           single_predict = single_predict*self.prob_multiplier
+           single_predict = np.uint8(single_predict)
+           ret,thresh_image = cv2.threshold(single_predict,0.2*self.prob_multiplier,1,cv2.THRESH_BINARY)
+
+           single_predict_noised = prediction_noised[:,:,layer_num]
+           single_predict_noised = single_predict_noised*self.prob_multiplier
+           single_predict_noised = np.uint8(single_predict_noised)
+           single_predict_noised_masked = thresh_image*single_predict_noised  # keep the pixel value of single_predict_noised when value at thresh_image is 1, and make other pixels zero
+           ret,thresh_image_noised = cv2.threshold(single_predict_noised_masked,self.scaled_prob_thresh,1,cv2.THRESH_BINARY)   
+                                                                     #cv2.threshold(input_image,threshold,max_value,threshold_type)
+
+           intermid_image = cv2.subtract(2*thresh_image,thresh_image_noised)   #if pixel value = 2 (not trustful), if pixel value = 1 (trustful) if pixel value = 0 (undetected)
+
+           ret,thresh_image_cost = cv2.threshold(intermid_image,1,255,cv2.THRESH_TOZERO_INV)
+           ret,thresh_image_cost = cv2.threshold(thresh_image_cost,0,self.cost_low,cv2.THRESH_BINARY)
+           thresh_image_cost = np.uint16(thresh_image_cost)                      
+           cost_low_image = cv2.add(cost_low_image,thresh_image_cost)
+
+           ret,thresh_image_invalid = cv2.threshold(intermid_image,1,self.invalid_cost,cv2.THRESH_BINARY)
+           thresh_image_invalid = np.uint16(thresh_image_invalid)
+           invalid_region_image = cv2.add(invalid_region_image,thresh_image_invalid)
+
+        ret,cost_low_image = cv2.threshold(cost_low_image,(self.cost_low-1),self.cost_low,cv2.THRESH_BINARY)
+
+        for layer_num in cost_med_list:
+           single_predict = prediction[:,:,layer_num]
+           single_predict = single_predict*self.prob_multiplier
+           single_predict = np.uint8(single_predict)
+           ret,thresh_image = cv2.threshold(single_predict,0.2*self.prob_multiplier,1,cv2.THRESH_BINARY)
+
+           single_predict_noised = prediction_noised[:,:,layer_num]
+           single_predict_noised = single_predict_noised*self.prob_multiplier
+           single_predict_noised = np.uint8(single_predict_noised)
+           single_predict_noised_masked = thresh_image*single_predict_noised  # keep the pixel value of single_predict_noised when value at thresh_image is 1, and make other pixels zero
+           ret,thresh_image_noised = cv2.threshold(single_predict_noised_masked,self.scaled_prob_thresh,1,cv2.THRESH_BINARY)   
+                                                                     #cv2.threshold(input_image,threshold,max_value,threshold_type)
+
+           intermid_image = cv2.subtract(2*thresh_image,thresh_image_noised)   #if pixel value = 2 (not trustful), if pixel value = 1 (trustful) if pixel value = 0 (undetected)
+
+           ret,thresh_image_cost = cv2.threshold(intermid_image,1,255,cv2.THRESH_TOZERO_INV)
+           ret,thresh_image_cost = cv2.threshold(thresh_image_cost,0,self.cost_med,cv2.THRESH_BINARY)
+           thresh_image_cost = np.uint16(thresh_image_cost)                     
+           cost_med_image = cv2.add(cost_med_image,thresh_image_cost)
+
+           ret,thresh_image_invalid = cv2.threshold(intermid_image,1,self.invalid_cost,cv2.THRESH_BINARY)
+           thresh_image_invalid = np.uint16(thresh_image_invalid)
+           invalid_region_image = cv2.add(invalid_region_image,thresh_image_invalid)
+
+        ret,cost_med_image = cv2.threshold(cost_med_image,(self.cost_med-1),self.cost_med,cv2.THRESH_BINARY)
+
+        for layer_num in cost_high_list:
+           single_predict = prediction[:,:,layer_num]
+           single_predict = single_predict*self.prob_multiplier
+           single_predict = np.uint8(single_predict)
+           ret,thresh_image = cv2.threshold(single_predict,0.2*self.prob_multiplier,1,cv2.THRESH_BINARY)
+
+           single_predict_noised = prediction_noised[:,:,layer_num]
+           single_predict_noised = single_predict_noised*self.prob_multiplier
+           single_predict_noised = np.uint8(single_predict_noised)
+           single_predict_noised_masked = thresh_image*single_predict_noised  # keep the pixel value of single_predict_noised when value at thresh_image is 1, and make other pixels zero
+           ret,thresh_image_noised = cv2.threshold(single_predict_noised_masked,self.scaled_prob_thresh,1,cv2.THRESH_BINARY)   
+                                                                     #cv2.threshold(input_image,threshold,max_value,threshold_type)
+
+           intermid_image = cv2.subtract(2*thresh_image,thresh_image_noised)  #if pixel value = 2 (not trustful), if pixel value = 1 (trustful) if pixel value = 0 (undetected)
+
+           ret,thresh_image_cost = cv2.threshold(intermid_image,1,255,cv2.THRESH_TOZERO_INV)
+           ret,thresh_image_cost = cv2.threshold(thresh_image_cost,0,self.cost_high,cv2.THRESH_BINARY)
+           thresh_image_cost = np.uint16(thresh_image_cost)                      
+           cost_high_image = cv2.add(cost_high_image,thresh_image_cost)
+
+           ret,thresh_image_invalid = cv2.threshold(intermid_image,1,self.invalid_cost,cv2.THRESH_BINARY)
+           thresh_image_invalid = np.uint16(thresh_image_invalid)
+           invalid_region_image = cv2.add(invalid_region_image,thresh_image_invalid)
+
+        ret,cost_high_image = cv2.threshold(cost_high_image,(self.cost_high-1),self.cost_high,cv2.THRESH_BINARY)
+
+        cost_low_image = np.uint8(cost_low_image)
+        cost_med_image = np.uint8(cost_med_image)
+        cost_high_image = np.uint8(cost_high_image)
+        cost_image = cv2.add(cost_image,cost_low_image)
+        cost_image = cv2.add(cost_image,cost_med_image)
+        cost_image = cv2.add(cost_image,cost_high_image)
+        ret,invalid_region_image_cost = cv2.threshold(invalid_region_image,(self.invalid_cost-1),self.invalid_cost,cv2.THRESH_BINARY)
+        invalid_region_image_cost = np.uint8(invalid_region_image_cost)
+        cost_image = cv2.add(cost_image,invalid_region_image_cost)
+
+        msg = self.bridge.cv2_to_imgmsg(cost_image)
+        msg.header.stamp = self.in_time #rospy.Time.now()
+        msg.height = h
+        msg.width = w
+
+
+        ### below threshold is just for visualization #####
+        ret_1,inv_region_img_visual1 = cv2.threshold(invalid_region_image,(self.invalid_cost-1),128,cv2.THRESH_BINARY)   # 128 is just for gray color
+        ret_2,inv_region_img_visual2 = cv2.threshold(invalid_region_image,(self.invalid_cost-1),255,cv2.THRESH_BINARY_INV)
+        inv_region_img_visual1 = np.uint8(inv_region_img_visual1)
+        inv_region_img_visual2 = np.uint8(inv_region_img_visual2)
+
+        inv_region_img_visual = cv2.add(inv_region_img_visual1,inv_region_img_visual2)
+
+        msg_invalid_region = self.bridge.cv2_to_imgmsg(inv_region_img_visual)
+        msg_invalid_region.header.stamp = rospy.Time.now()
+        msg_invalid_region.height = h
+        msg_invalid_region.width = w
+
+        depth_msg = self.bridge.cv2_to_imgmsg(self.depth_img)
+        depth_msg.header.stamp = self.in_time #rospy.Time.now()
+        depth_msg.height = h
+        depth_msg.width = w
+
+        if(self.is_imgcostmap_pub == True):
+           self.image_costmap_pub.publish(msg)
+           self.sync_depth_image_pub.publish(depth_msg)
+           if self.noised_pspnet_use == True:
+              self.invalid_region_image_costmap_pub.publish(msg_invalid_region)
+
+    def CostImgSinglePred(self, prediction):
+        
         h, w, _ = prediction.shape
         cost_image = np.zeros((h,w), dtype="uint8")
 
@@ -401,32 +606,6 @@ class pspnet_node:
 
         #----------- code for checking the data end -------------------
 
-        for layer_num in cost_med_list:
-           single_prediction = prediction[:,:,layer_num]
-           single_prediction = single_prediction*self.prob_multiplier
-           single_prediction = np.uint8(single_prediction)
-           ret,thresh_image = cv2.threshold(single_prediction,self.scaled_prob_thresh,self.cost_med,cv2.THRESH_BINARY)   
-                                                                     #cv2.threshold(input_image,threshold,max_value,threshold_type)
-           cost_image = cv2.add(cost_image,thresh_image)
-
-        #------------ code for checking the data ---------------------
-
-        #file_med_cost = open("med_cost_image.txt","w")
- 
-        #for i in range(0,h): 
-        #   file_med_cost.write("\n") 
-
-        #   for j in range(0,w):  
-        #      element = round_to_2(cost_image[i,j])  
-        #      element_str = str(element) 
-        #      L1 = [element_str, " "] 
-        #      file_med_cost.writelines(L1) 
-
-        #file_med_cost.close() 
-
-        #----------- code for checking the data end -------------------
-
-
         for layer_num in cost_high_list:
            single_prediction = prediction[:,:,layer_num]
            single_prediction = single_prediction*self.prob_multiplier
@@ -456,12 +635,12 @@ class pspnet_node:
 
 
         msg = self.bridge.cv2_to_imgmsg(cost_image)
-        msg.header.stamp = rospy.Time.now()
+        msg.header.stamp = self.in_time #rospy.Time.now()
         msg.height = h
         msg.width = w
 
         depth_msg = self.bridge.cv2_to_imgmsg(self.depth_img)
-        depth_msg.header.stamp = rospy.Time.now()
+        depth_msg.header.stamp = self.in_time #rospy.Time.now()
         depth_msg.height = h
         depth_msg.width = w
 

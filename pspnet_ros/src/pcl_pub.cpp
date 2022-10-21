@@ -23,12 +23,12 @@
 
 /* parameters for generating point cloud from  image */
 #define STRIDE 3
-#define STRIDE1 5
-#define STRIDE2 10
+#define STRIDE1 8
+#define STRIDE2 15
 
 #define ROWTHRESH 240
-#define ROWTHRESH1 280
-#define ROWTHRESH2 320
+#define ROWTHRESH1 320
+#define ROWTHRESH2 360
 
 #define DEPTH_FAR_THRESH 6
 
@@ -59,6 +59,7 @@ private:
    ros::NodeHandle m_nh;
    ros::NodeHandle p_nh;
    ros::Rate* _loop_rate;
+   ros::Time _in_time;
 
    cv::Mat _cost_image;
    cv::Mat _sync_depth_image;
@@ -120,7 +121,8 @@ Pclpub::Pclpub(ros::NodeHandle nh, ros::NodeHandle _nh):m_nh(nh),p_nh(_nh)
      this->_depth_cam_info_sub = m_nh.subscribe<sensor_msgs::CameraInfo>(depth_cam_info_topic,1,&Pclpub::depth_cam_info_callback,this);
 
      this->_pointcloud_pub = m_nh.advertise<cloudxyzi_t>(point_cloud_pub_topic,1);
-
+ 
+     this->_in_time = ros::Time::now(); // create time instance
 
      this->_count = 0;
 
@@ -149,19 +151,33 @@ void Pclpub::sync_depth_img_callback(const sensor_msgs::Image::ConstPtr& msg)
 
 void Pclpub::depth_cam_info_callback(const sensor_msgs::CameraInfo::ConstPtr& msg)
 {
-  this->_fx = msg->K[0];
-  this->_fy = msg->K[4];
-  this->_px = msg->K[2];
-  this->_py = msg->K[5];
-  this->_dscale = 0.001; //this->_dscale = msg->D[0];
+  if(this->_camerainfo_receive_flag == false)
+  {
+      this->_fx = msg->K[0];
+      this->_fy = msg->K[4];
+      this->_px = msg->K[2];
+      this->_py = msg->K[5];
+      this->_dscale = 0.001; //this->_dscale = msg->D[0];
 
-  this->_camerainfo_receive_flag = true;
+      this->_camerainfo_receive_flag = true;
+
+      ROS_INFO("this->_fx : %f this->_fy : %f this->_px : %f this->_py : %f this->_dscale : %f",this->_fx,this->_fy,this->_px,this->_py,this->_dscale);
+  }
 }
 
 void Pclpub::costmap_sync_depth_img_callback(const sensor_msgs::Image::ConstPtr& cost_img,const sensor_msgs::Image::ConstPtr& depth_img)
 {
   cv::Mat sync_depth_image;
   cv::Mat cost_image;
+
+  ros::Duration d(0.5);
+
+  if(((cost_img->header.stamp - depth_img->header.stamp) > d)||((depth_img->header.stamp- cost_img->header.stamp ) > d))
+  {
+    ROS_INFO("check the time instance for PSPNet (msg is published in pspnet_pcl_pub) cost image time info : %f, sync depth image time info : %f ",  cost_img->header.stamp.toSec(), depth_img->header.stamp.toSec());
+  }
+
+  this->_in_time = cost_img->header.stamp;
 
   cost_image = cv_bridge::toCvCopy(cost_img)->image;
   cost_image.convertTo(cost_image,CV_16UC1);
@@ -299,6 +315,7 @@ void Pclpub::pointcloud_publish()
    }
 
    tmpCloud->header.seq = this->_count;
+   tmpCloud->header.stamp =  this->_in_time.toNSec()/1e3; //ros::Time::now();//this->_in_time; // https://answers.ros.org/question/172241/pcl-and-rostime/
    tmpCloud->header.frame_id = this->_point_cloud_frame;
    tmpCloud->height = 1;
    tmpCloud->width = tmpCloud->points.size();
