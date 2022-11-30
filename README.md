@@ -1,1 +1,1 @@
-# pspnet_ros_wrapper
+# pspnet + urf on ROS
