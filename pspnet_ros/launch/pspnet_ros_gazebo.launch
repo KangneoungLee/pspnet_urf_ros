@@ -24,7 +24,8 @@
           <param name="color_image_topic_name"        value="camera/color/image_raw"/> <!-- front_cam/camera/color/image_raw -->
 	  <param name="depth_image_topic_name"        value="camera/depth/image_rect_raw"/> <!-- front_cam/camera/depth/image_rect_raw -->
           <param name="depth_camera_info_topic_name"        value="camera/depth/camera_info"/>
-          <param name="noised_pspnet_use"      value="True"/>  <!-- True -->
+          <param name="urf_enable"      value="True"/>  <!-- True -->
+          <param name="adaptive_urf_enable"      value="True"/>  <!-- True -->
           <param name="publish_image_for_costmap"      value="True"/>
           <param name="publish_image_for_leginhibit"      value="True"/>
           <param name="publish_semantic_segmentation_image"      value="True"/>
@@ -35,7 +36,8 @@
           <param name="cost_low"        value="5"/>  <!-- 5 -->
           <param name="cost_med"        value="128"/>  <!-- 20 -->
           <param name="cost_high"        value="255"/>
-          <param name="cost_ur"        value="32"/>
+          <param name="cost_ur"        value="64"/>
+          <param name="default_std_dev"        value="0.03"/>
           <param name="probability_treshold"        value="0.5"/>
      </node>
 

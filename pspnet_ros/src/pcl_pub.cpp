@@ -22,9 +22,9 @@
 
 
 /* parameters for generating point cloud from  image */
-#define STRIDE 3
-#define STRIDE1 8
-#define STRIDE2 15
+#define STRIDE 6
+#define STRIDE1 15
+#define STRIDE2 25
 
 #define ROWTHRESH 240
 #define ROWTHRESH1 320
@@ -55,7 +55,8 @@ private:
    std::string _tf_prefix;
 
    bool _camerainfo_receive_flag = false;
-
+   float _sim_d_scale;
+   bool _sim_mode; 
    ros::NodeHandle m_nh;
    ros::NodeHandle p_nh;
    ros::Rate* _loop_rate;
@@ -99,12 +100,17 @@ Pclpub::Pclpub(ros::NodeHandle nh, ros::NodeHandle _nh):m_nh(nh),p_nh(_nh)
      std::string tf_prefix = "";
 
      int update_rate = 10;
+     float sim_d_scale = 0.0012;
+     bool sim_mode = false;
 
      p_nh.getParam("cost_image_topic",cost_image_topic);
      p_nh.getParam("sync_depth_image_topic",sync_depth_image_topic);
      p_nh.getParam("depth_cam_info_topic",depth_cam_info_topic);
      p_nh.getParam("point_cloud_frame",point_cloud_frame);
      p_nh.getParam("tf_prefix",tf_prefix);
+
+     p_nh.getParam("tf_prefix",sim_mode);
+     p_nh.getParam("tf_prefix",sim_d_scale);
      
      //p_nh.getParam("update_rate",update_rate);
 
@@ -128,6 +134,8 @@ Pclpub::Pclpub(ros::NodeHandle nh, ros::NodeHandle _nh):m_nh(nh),p_nh(_nh)
 
      this->_loop_rate = new ros::Rate(update_rate);
 
+     this->_sim_d_scale = sim_d_scale;
+     this->_sim_mode = sim_mode;
 }
 
 Pclpub::~Pclpub()
@@ -158,7 +166,7 @@ void Pclpub::depth_cam_info_callback(const sensor_msgs::CameraInfo::ConstPtr& ms
       this->_px = msg->K[2];
       this->_py = msg->K[5];
       this->_dscale = 0.001; //this->_dscale = msg->D[0];
-
+      if (this->_sim_mode == true) this->_dscale = this->_sim_d_scale; 
       this->_camerainfo_receive_flag = true;
 
       ROS_INFO("this->_fx : %f this->_fy : %f this->_px : %f this->_py : %f this->_dscale : %f",this->_fx,this->_fy,this->_px,this->_py,this->_dscale);
@@ -214,7 +222,7 @@ void Pclpub::costmap_sync_depth_img_callback(const sensor_msgs::Image::ConstPtr&
       this->_px = 423;
       this->_py = 239;
       this->_dscale = 0.001; 
-
+      if (this->_sim_mode == true) this->_dscale = this->_sim_d_scale; 
        
   }
 

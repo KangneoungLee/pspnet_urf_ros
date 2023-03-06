@@ -15,6 +15,10 @@
           <param name="depth_cam_info_topic"        value="camera/depth/camera_info"/>
           <param name="point_cloud_frame"        value="depth_camera_optical_frame"/>  
           <param name="tf_prefix"        value=""/>
+          <param name="sim_mode"        value="true"/> 
+          <param name="sim_d_scale"        value="0.001"/>
+          <param name="sim_fx"        value="0.001"/>
+          <param name="sim_fy"        value="0.001"/>
         
 </node>
 <!--
